@@ -87,12 +87,16 @@ class CifraClubStandalone:
     
     def _extrair_youtube(self, soup):
         try:
-            img = soup.find('div', class_='player-placeholder')
-            if img and img.img:
-                img_src = img.img.get('src', '')
-                if '/vi/' in img_src:
-                    cod = img_src.split('/vi/')[1].split('/')[0]
-                    return f"https://www.youtube.com/watch?v={cod}"
+            html_text = str(soup)
+            match = re.search(r'youtube\.com/watch\?v=([A-Za-z0-9_-]+)', html_text)
+            if match:
+                video_id = match.group(1)
+                return f"https://www.youtube.com/watch?v={video_id}"
+            
+            match2 = re.search(r'youtu\.be/([A-Za-z0-9_-]+)', html_text)
+            if match2:
+                video_id = match2.group(1)
+                return f"https://www.youtube.com/watch?v={video_id}"
         except:
             pass
         return None
