@@ -2,8 +2,20 @@
 
 import sys
 import re
+import os
+import webbrowser
+from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Preformatted, PageBreak, KeepTogether, Frame, PageTemplate
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus.doctemplate import BaseDocTemplate
+from reportlab.platypus.frames import Frame
 
 
 NOTAS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -251,11 +263,135 @@ class CifraClubStandalone:
         
         print(cifra)
         print("\n" + "="*70 + "\n")
+    
+    def salvar_pdf(self, dados: dict, semitons: int = 0, tom_destino: str = None, abrir_automaticamente: bool = False):
+        if 'erro' in dados:
+            print(f"\n❌ {dados['erro']}\n")
+            return None
+        
+        if tom_destino and dados.get('tom_original'):
+            semitons = self.calcular_semitons_entre_tons(dados['tom_original'], tom_destino)
+        
+        pasta_pdf = "pdf"
+        if not os.path.exists(pasta_pdf):
+            os.makedirs(pasta_pdf)
+        
+        tom_exibir = dados.get('tom_original', 'SemTom')
+        if semitons != 0 and dados.get('tom_original'):
+            tom_transposto = self._transpor_nota(
+                dados['tom_original'].split('m')[0], 
+                semitons
+            )
+            sufixo = 'm' if 'm' in dados['tom_original'] else ''
+            tom_exibir = f"{tom_transposto}{sufixo}"
+        
+        nome_arquivo = f"{dados['artista']}_{dados['musica']}_{tom_exibir}.pdf"
+        nome_arquivo = nome_arquivo.replace(' ', '_').replace('/', '_')
+        caminho_pdf = os.path.join(pasta_pdf, nome_arquivo)
+        
+        cifra = dados['cifra']
+        if semitons != 0:
+            cifra = self.transpor_cifra(cifra, semitons)
+        
+        frame_width = (A4[0] - 4*cm) / 2
+        frame_height = A4[1] - 7*cm
+        
+        frame1 = Frame(1.5*cm, 2*cm, frame_width, frame_height, id='col1', 
+                      leftPadding=0, rightPadding=10, topPadding=0, bottomPadding=0)
+        frame2 = Frame(1.5*cm + frame_width + 1*cm, 2*cm, frame_width, frame_height, id='col2',
+                      leftPadding=10, rightPadding=0, topPadding=0, bottomPadding=0)
+        
+        def header_footer(canvas, doc):
+            canvas.saveState()
+            
+            canvas.setFont('Helvetica-Bold', 14)
+            title = f"{dados['musica']} - {dados['artista']}"
+            canvas.drawCentredString(A4[0]/2, A4[1] - 1.5*cm, title)
+            
+            canvas.setFont('Helvetica', 9)
+            y_pos = A4[1] - 2*cm
+            
+            if dados.get('tom_original'):
+                if semitons != 0:
+                    info_tom = f"Tom original: {dados['tom_original']} → Tom atual: {tom_exibir} ({'+' if semitons > 0 else ''}{semitons} semitons)"
+                else:
+                    info_tom = f"Tom: {tom_exibir}"
+                canvas.drawCentredString(A4[0]/2, y_pos, info_tom)
+                y_pos -= 0.4*cm
+            
+            if dados.get('youtube_url'):
+                canvas.drawCentredString(A4[0]/2, y_pos, f"YouTube: {dados['youtube_url']}")
+                y_pos -= 0.4*cm
+            
+            canvas.setFont('Helvetica', 8)
+            canvas.drawCentredString(A4[0]/2, y_pos, f"Fonte: {dados['url']}")
+            
+            canvas.setFont('Helvetica', 8)
+            canvas.drawCentredString(A4[0]/2, 1*cm, f"Página {doc.page}")
+            
+            canvas.restoreState()
+        
+        template = PageTemplate(id='TwoCol', frames=[frame1, frame2], onPage=header_footer)
+        doc = SimpleDocTemplate(caminho_pdf, pagesize=A4,
+                                rightMargin=1.5*cm, leftMargin=1.5*cm,
+                                topMargin=4*cm, bottomMargin=1.5*cm)
+        doc.addPageTemplates([template])
+        
+        story = []
+        styles = getSampleStyleSheet()
+        
+        code_style = ParagraphStyle(
+            'Code',
+            parent=styles['Code'],
+            fontSize=8,
+            fontName='Courier',
+            leftIndent=0,
+            rightIndent=0,
+            spaceAfter=2,
+            spaceBefore=0,
+            leading=10,
+            keepWithNext=False
+        )
+        
+        linhas = cifra.split('\n')
+        i = 0
+        while i < len(linhas):
+            linha = linhas[i]
+            
+            if linha.strip():
+                is_section = linha.strip().startswith('[')
+                is_chord_line = self._e_linha_de_acordes(linha)
+                
+                if is_section:
+                    if i > 0:
+                        story.append(Spacer(1, 0.3*cm))
+                    story.append(Preformatted(linha, code_style))
+                elif is_chord_line and i + 1 < len(linhas) and linhas[i + 1].strip() and not linhas[i + 1].strip().startswith('['):
+                    combined = linha + '\n' + linhas[i + 1]
+                    story.append(KeepTogether([Preformatted(combined, code_style)]))
+                    i += 1
+                else:
+                    story.append(Preformatted(linha, code_style))
+            else:
+                story.append(Spacer(1, 0.15*cm))
+            
+            i += 1
+        
+        doc.build(story)
+        
+        if abrir_automaticamente:
+            try:
+                caminho_absoluto = os.path.abspath(caminho_pdf)
+                webbrowser.open(f'file:///{caminho_absoluto}')
+            except:
+                pass
+        
+        return caminho_pdf
 
 
 def main():
     if len(sys.argv) < 3:
-        print("Uso: python cifra_standalone.py <artista> <musica> [semitons|tom]")
+        print("Uso: python cifra_standalone.py <artista> <musica> [semitons|tom] [--pdf] [--abrir]")
         print("\nExemplos:")
         print("  python cifra_standalone.py coldplay the-scientist")
         print("  python cifra_standalone.py coldplay the-scientist 2")
@@ -264,10 +400,15 @@ def main():
         print("  python cifra_standalone.py coldplay the-scientist D#")
         print("  python cifra_standalone.py coldplay the-scientist Cm")
         print("  python cifra_standalone.py coldplay the-scientist Bb")
+        print("  python cifra_standalone.py coldplay the-scientist C --pdf")
+        print("  python cifra_standalone.py coldplay the-scientist C --pdf --abrir")
+        print("  python cifra_standalone.py coldplay the-scientist 2 --abrir")
         print("\nDica:")
         print("  - Use números positivos/negativos para transpor por semitons")
         print("  - Use notas (C, D, E, F, G, A, B) com # ou b para transpor para um tom específico")
         print("  - Adicione 'm' após a nota para tons menores (Cm, Dm, etc.)")
+        print("  - Use --pdf para salvar em PDF na pasta /pdf")
+        print("  - Use --abrir para salvar e abrir o PDF automaticamente")
         sys.exit(1)
     
     artista = sys.argv[1]
@@ -275,14 +416,23 @@ def main():
     
     tom_destino = None
     semitons = 0
+    salvar_em_pdf = False
+    abrir_pdf = False
     
     if len(sys.argv) > 3:
-        argumento = sys.argv[3].strip()
-        
-        try:
-            semitons = int(argumento)
-        except ValueError:
-            tom_destino = argumento
+        for i in range(3, len(sys.argv)):
+            argumento = sys.argv[i].strip()
+            
+            if argumento.lower() == '--pdf':
+                salvar_em_pdf = True
+            elif argumento.lower() == '--abrir':
+                salvar_em_pdf = True
+                abrir_pdf = True
+            else:
+                try:
+                    semitons = int(argumento)
+                except ValueError:
+                    tom_destino = argumento
     
     print(f"\n🔍 Buscando cifra de '{musica}' - {artista}...")
     
@@ -293,6 +443,19 @@ def main():
         cifra_club.exibir_cifra(dados, tom_destino=tom_destino)
     else:
         cifra_club.exibir_cifra(dados, semitons=semitons)
+    
+    if salvar_em_pdf:
+        print("\n💾 Salvando em PDF...")
+        if tom_destino:
+            caminho = cifra_club.salvar_pdf(dados, tom_destino=tom_destino, abrir_automaticamente=abrir_pdf)
+        else:
+            caminho = cifra_club.salvar_pdf(dados, semitons=semitons, abrir_automaticamente=abrir_pdf)
+        
+        if caminho:
+            if abrir_pdf:
+                print(f"✅ PDF salvo e aberto: {caminho}\n")
+            else:
+                print(f"✅ PDF salvo em: {caminho}\n")
 
 
 if __name__ == "__main__":
